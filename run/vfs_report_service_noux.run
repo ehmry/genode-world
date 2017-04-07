@@ -1,0 +1,255 @@
+#
+# Uncomment the following line when working on the VIM source code. Otherwise,
+# the package may get recompiled, yet it does not get reinstalled into 'bin/'.
+#
+#exec rm -rf noux-pkg/bash bin/bash
+
+set build_components {
+	core init drivers/timer noux/minimal lib/libc_noux
+	drivers/framebuffer drivers/input
+	server/terminal server/vfs
+	test/libports/ncurses
+	lib/vfs/report_service
+	test/log
+}
+
+source ${genode_dir}/repos/base/run/platform_drv.inc
+
+lappend_if [have_spec x86]  build_components drivers/rtc
+lappend_if [need_usb_hid]   build_components drivers/usb
+lappend_if [have_spec gpio] build_components drivers/gpio
+
+proc gpio_drv { } { if {[have_spec rpi] && [have_spec hw]}  { return hw_gpio_drv }
+                    if {[have_spec rpi] && [have_spec foc]} { return foc_gpio_drv }
+                    return gpio_drv }
+
+#
+# Build Noux packages only once
+#
+foreach pkg {bash coreutils vim diffutils less} {
+	lappend_if [expr ![file exists bin/$pkg]] build_components noux-pkg/$pkg }
+
+append_platform_drv_build_components
+
+build $build_components
+
+# write default vimrc file
+set vimrc_fd [open "bin/vim/share/vim/vimrc" w]
+puts $vimrc_fd {
+set noloadplugins
+set hls
+set nocompatible
+set laststatus=2
+set noswapfile
+set viminfo=}
+close $vimrc_fd
+
+# strip all binaries prior archiving
+exec sh -c "find bin/bash/ bin/vim/ bin/coreutils/ -type f | (xargs [cross_dev_prefix]strip || true) 2>/dev/null"
+
+exec tar cfv bin/bash.tar      -h -C bin/bash .
+exec tar cfv bin/coreutils.tar -h -C bin/coreutils .
+exec tar cfv bin/vim.tar       -h -C bin/vim .
+exec tar cfv bin/diffutils.tar -h -C bin/diffutils .
+exec tar cfv bin/less.tar      -h -C bin/less .
+
+create_boot_directory
+
+append config {
+	<config verbose="yes">
+		<parent-provides>
+			<service name="ROM"/>
+			<service name="LOG"/>
+			<service name="RAM"/>
+			<service name="RM"/>
+			<service name="CPU"/>
+			<service name="PD"/>
+			<service name="IRQ"/>
+			<service name="IO_PORT"/>
+			<service name="IO_MEM"/>
+		</parent-provides>
+		<default-route>
+			<any-service> <parent/> <any-child/> </any-service>
+		</default-route>
+		<start name="timer">
+			<resource name="RAM" quantum="1M"/>
+			<provides><service name="Timer"/></provides>
+		</start>}
+
+append_if [have_spec x86] config {
+		<start name="rtc_drv">
+			<resource name="RAM" quantum="1M"/>
+			<provides><service name="Rtc"/></provides>
+		</start>}
+
+append_if [have_spec sdl] config {
+	<start name="fb_sdl">
+		<resource name="RAM" quantum="4M"/>
+		<provides>
+			<service name="Input"/>
+			<service name="Framebuffer"/>
+		</provides>
+	</start>}
+
+append_platform_drv_config
+
+append_if [have_spec framebuffer] config {
+	<start name="fb_drv">
+		<resource name="RAM" quantum="4M"/>
+		<provides><service name="Framebuffer"/></provides>
+	</start>}
+
+append_if [have_spec ps2] config {
+	<start name="ps2_drv">
+		<resource name="RAM" quantum="1M"/>
+		<provides><service name="Input"/></provides>
+	</start> }
+
+append_if [have_spec gpio] config "
+	<start name=\"[gpio_drv]\">
+		<resource name=\"RAM\" quantum=\"4M\"/>
+		<provides><service name=\"Gpio\"/></provides>
+		<config/>
+	</start>"
+
+append_if [need_usb_hid] config {
+	<start name="usb_drv">
+		<resource name="RAM" quantum="12M"/>
+		<provides><service name="Input"/></provides>
+		<config uhci="yes" ehci="yes" xhci="yes"> <hid/> </config>
+	</start> }
+
+append config {
+
+		<start name="vfs">
+			<resource name="RAM" quantum="2M"/>
+			<provides>
+				<service name="File_system"/>
+				<service name="Report"/>
+			</provides>
+			<config ld_verbose="true">
+				<vfs>
+					<report_service/>
+				</vfs>
+				<default-policy root="/" />
+			</config>
+		</start>
+
+	<start name="terminal">
+		<resource name="RAM" quantum="2M"/>
+		<provides><service name="Terminal"/></provides>
+		<config>
+			<keyboard layout="us"/>
+			<font size="12" />
+		</config>
+	</start>
+	<start name="noux">
+		<resource name="RAM" quantum="8M" />
+		<config>
+			<fstab>
+				<tar name="coreutils.tar" />
+				<tar name="vim.tar" />
+				<tar name="diffutils.tar" />
+				<tar name="less.tar" />
+				<tar name="bash.tar" />
+
+				<dir name="reports"> <fs/> </dir>
+
+				<dir name="dev">}
+
+append_if [have_spec x86] config {
+					<rtc/>}
+append config {
+					<zero/> <null/>
+				</dir>
+			</fstab>
+			<start name="/bin/bash">
+				<env name="TERM" value="linux" />
+			</start>
+		</config>
+	</start>
+		<start name="init">
+			<resource name="RAM" quantum="8M"/>
+			<config>
+				<report init_ram="yes" requested="yes" provided="yes" child_ram="yes"/>
+				<parent-provides>
+					<service name="LOG"/>
+					<service name="PD"/>
+					<service name="CPU"/>
+					<service name="ROM"/>
+					<service name="RAM"/>
+					<service name="Report"/>
+					<service name="Timer"/>
+				</parent-provides>
+				<default-route>
+					<any-service> <parent/> </any-service>
+				</default-route>
+				<start name="init">
+					<resource name="RAM" quantum="4M"/>
+					<config>
+						<report init_ram="yes" requested="yes" provided="yes" child_ram="yes"/>
+						<parent-provides>
+							<service name="LOG"/>
+							<service name="PD"/>
+							<service name="CPU"/>
+							<service name="ROM"/>
+							<service name="RAM"/>
+							<service name="Report"/>
+							<service name="Timer"/>
+						</parent-provides>
+						<default-route>
+							<any-service> <parent/> </any-service>
+						</default-route>
+						<start name="test-log">
+							<resource name="RAM" quantum="1M"/>
+						</start>
+					</config>
+				</start>
+			</config>
+			<route>
+				<service name="Report"> <child name="vfs"/> </service>
+				<any-service> <parent/> <any-child/> </any-service>
+			</route>
+		</start>
+</config>
+}
+
+install_config $config
+
+
+#
+# Boot modules
+#
+
+# generic modules
+set boot_modules {
+	core init timer ld.lib.so noux terminal ram_fs
+	libc.lib.so libm.lib.so libc_noux.lib.so ncurses.lib.so
+	bash.tar coreutils.tar diffutils.tar less.tar vim.tar
+	vfs vfs_report_service.lib.so test-log
+}
+
+# platform-specific modules
+lappend_if [have_spec       linux] boot_modules fb_sdl
+lappend_if [have_spec         ps2] boot_modules ps2_drv
+lappend_if [have_spec         x86] boot_modules rtc_drv
+lappend_if [have_spec framebuffer] boot_modules fb_drv
+lappend_if [need_usb_hid]          boot_modules usb_drv
+lappend_if [have_spec gpio]        boot_modules [gpio_drv]
+
+append_platform_drv_boot_modules
+
+build_boot_image $boot_modules
+
+if {[have_spec x86_64]} {
+	# bash.tar is really huge when built for x86_64
+	append qemu_args " -m 512 "
+}
+
+run_genode_until {child "noux" exited} 1200
+
+exec rm bin/bash.tar
+exec rm bin/coreutils.tar
+exec rm bin/diffutils.tar
+exec rm bin/less.tar
+exec rm bin/vim.tar
