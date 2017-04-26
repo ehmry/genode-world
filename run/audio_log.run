@@ -1,0 +1,187 @@
+assert_spec x86
+
+# Xmllint throws errors on inline chuck code
+proc check_xml_syntax {xml_file} { }
+
+#
+# Build
+#
+
+set build_components {
+	core init
+	app/chuck
+	drivers/audio
+	drivers/timer
+	server/input_log
+	server/log_tee
+	test/input_log
+}
+
+source ${genode_dir}/repos/base/run/platform_drv.inc
+append_platform_drv_build_components
+
+build $build_components
+
+#
+# Download sampled audio
+#
+
+set klaxon_url "https://upload.wikimedia.org/wikipedia/commons/8/83/WWII_submarine_dive_klaxon.ogg"
+if {![file exists bin/klaxon.ogg]} {
+	puts "downloading media file from $klaxon_url"
+	catch { exec wget -O bin/klaxon.ogg $klaxon_url }
+}
+
+create_boot_directory
+
+#
+# Config
+#
+
+append config {
+<config>
+	<parent-provides>
+		<service name="CPU"/>
+		<service name="IO_MEM"/>
+		<service name="IO_PORT"/>
+		<service name="IRQ"/>
+		<service name="LOG"/>
+		<service name="PD"/>
+		<service name="RAM"/>
+		<service name="RM"/>
+		<service name="ROM"/>
+	</parent-provides>
+	<default-route>
+		<any-service> <parent/> <any-child/> </any-service>
+	</default-route>
+	<start name="timer">
+		<resource name="RAM" quantum="1M"/>
+		<provides><service name="Timer"/></provides>
+	</start>}
+
+append_platform_drv_config
+
+append config {
+	<start name="audio_drv">
+		<binary name="} [audio_drv_binary] {"/>
+		<resource name="RAM" quantum="8M"/>
+		<provides> <service name="Audio_out"/> </provides>
+		<config/>
+	</start>
+	<start name="input_log">
+		<resource name="RAM" quantum="2M"/>
+		<provides> <service name="LOG"/> <service name="Input"/> </provides>
+		<config>
+			<default-policy>
+				<search regex="INFO: " code="60"/>
+				<search regex="WARNING: " code="64"/>
+				<search regex="ERROR: " code="69"/>
+				<search regex="FATAL: " code="128"/>
+			</default-policy>
+		</config>
+	</start>
+	<start name="log_tee">
+		<resource name="RAM" quantum="2M"/>
+		<provides> <service name="LOG"/> </provides>
+		<route>
+			<service name="LOG" unscoped_label="log_tee"> <parent/> </service>
+			<service name="LOG"> <child name="input_log"/> </service>
+			<any-service> <parent/> </any-service>
+		</route>
+	</start>
+	<start name="chuck">
+		<resource name="RAM" quantum="32M"/>
+		<config dac_channels="2" adc_channels="0">
+			<libc stdout="/log" stderr="/log"/>
+			<vfs>
+				<log/>
+				<rom name="klaxon.ogg"/>
+<inline name="meh.ck">
+PulseOsc osc => Envelope env => dac;
+
+55.0 => float baseFreq;
+
+SndBuf klaxon => dac;
+"/klaxon.ogg" => klaxon.read;
+
+0.8 => klaxon.gain;
+0 => klaxon.loop;
+klaxon.samples() => klaxon.pos;
+
+Hid hi;
+HidMsg msg;
+if( !hi.openKeyboard( 0 ) ) me.exit();
+
+while (true) {
+	hi.recv(msg);
+	if (msg.isButtonDown()) {
+		if (msg.which > 127) {
+			0 => klaxon.pos;
+			0.9 :: second => now;
+			klaxon.samples() => klaxon.pos;
+		} else {
+			// key code to MIDI node to frequencey
+			msg.which => Std.mtof => osc.freq;
+			1 => env.keyOn;
+			0.2 :: second => now;
+			1 => env.keyOff;
+		}
+	}
+}
+</inline>
+			</vfs>
+			<file path="/meh.ck"/>
+		</config>
+		<route>
+			<any-service><parent/><any-child/></any-service>
+		</route>
+	</start>
+	<start name="test-input_log">
+		<resource name="RAM" quantum="2M"/>
+		<config>
+			<msg string="INFO: saving throw"/>
+			<msg string="INFO: 3 new emails"/>
+			<msg string="WARNING: MAINTENANCE REQUIRED SOON"/>
+			<msg string="WARNING: TONER LOW"/>
+			<msg string="ERROR: COOLANT TEMPRATURE CRITICAL"/>
+			<msg string="FATAL: NEUTRON SHIELD FAILURE IMMINENT"/>
+		</config>
+		<route>
+			<service name="LOG"> <child name="log_tee"/> </service>
+			<any-service> <parent/> <any-child/> </any-service>
+		</route>
+	</start>
+</config>}
+
+install_config $config
+
+#
+# Boot modules
+#
+
+append boot_modules {
+	core init ld.lib.so
+	chuck
+	input_log
+	libFLAC.lib.so
+	libc.lib.so
+	libm.lib.so
+	libogg.lib.so
+	libsndfile.lib.so
+	libvorbis.lib.so
+	log_tee
+	pthread.lib.so
+	stdcxx.lib.so
+	test-input_log
+	timer
+} [audio_drv_binary] {
+	klaxon.ogg
+}
+
+append_platform_drv_boot_modules
+
+build_boot_image $boot_modules
+
+append qemu_args " -m 128 -nographic -soundhw es1370 "
+
+run_genode_until forever
