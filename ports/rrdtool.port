@@ -1,0 +1,23 @@
+LICENSE   := GPLv2
+VERSION   := 1.7.0
+DOWNLOADS := rrdtool.archive
+
+URL(rrdtool) := https://oss.oetiker.ch/rrdtool/pub/rrdtool-$(VERSION).tar.gz
+SHA(rrdtool) := 15a2009e2ee67eb41a2598d1a0f1f7cf1a651c78
+DIR(rrdtool) := src/lib/rrdtool
+
+DIRS := include/rrd
+DIR_CONTENT(include/rrd) := src/lib/rrdtool/src/rrd.h
+
+default: fix_config
+
+fix_config: $(DOWNLOADS)
+	$(VERBOSE)sed -i \
+		-e '/HAVE_FEATURES_H/d' \
+		-e '/HAVE_POSIX_FALLOCATE/d' \
+		-e '/ENABLE_NLS/d' \
+		-e '/HAVE__NL_TIME_WEEK_1STDAY/d' \
+		-e '/HAVE_MMAP/d' \
+		-e '/HAVE_POSIX_FADVISE/d' \
+		-e '/HAVE_MADVISE/d' \
+		src/lib/rrdtool/src/rrd_config.h
