@@ -43,6 +43,8 @@ LIBCHARSET_SRC := $(notdir $(wildcard $(GLIB_SRC_DIR)/libcharset/*.c))
 
 GLIB_SRC := $(notdir $(wildcard $(GLIB_SRC_DIR)/*.c))
 
+GOBJECT_SRC := $(notdir $(wildcard $(GLIB_SRC_DIR)/gobject/*.c))
+
 GLIB_FILTER := \
 	goption.c guuid.c win_iconv.c \
 	$(notdir $(wildcard $(GLIB_SRC_DIR)/*win32*.c)) \
@@ -52,9 +54,11 @@ SRC_C = \
 	$(DEPRECATED_SRC_C) \
 	$(PCRE_SRC) \
 	$(LIBCHARSET_SRC) \
+	$(GOBJECT_SRC) \
 	$(filter-out $(GLIB_FILTER),$(GLIB_SRC)) \
 
 vpath %.c $(GLIB_SRC_DIR)
+vpath %.c $(GLIB_SRC_DIR)/gobject
 vpath %.c $(GLIB_SRC_DIR)/deprecated
 vpath %.c $(GLIB_SRC_DIR)/pcre
 vpath %.c $(GLIB_SRC_DIR)/libcharset
