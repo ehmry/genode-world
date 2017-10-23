@@ -1,0 +1,10 @@
+LICENSE   := MIT
+VERSION   := 1.40.12
+DOWNLOADS := pango.archive
+
+URL(pango) := http://ftp.gnome.org/pub/GNOME/sources/pango/1.40/pango-$(VERSION).tar.xz
+SHA(pango) := d512af5155d983f93e8aefbc28c5ca21423fc4eb
+DIR(pango) := src/lib/pango
+
+DIRS := include/pango
+DIR_CONTENT(include/pango) := src/lib/pango/pango/*.h
