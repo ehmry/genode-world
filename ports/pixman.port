@@ -1,0 +1,23 @@
+LICENSE   := MIT
+VERSION   := 0.34.0
+DOWNLOADS := pixman.archive
+
+URL(pixman) := https://www.cairographics.org/releases/pixman-$(VERSION).tar.gz
+SHA(pixman) := a1b1683c1a55acce9d928fea1ab6ceb79142ddc7
+DIR(pixman) := src/lib/pixman
+
+DIRS := include/pixman
+DIR_CONTENT(include/pixman) := src/lib/pixman/pixman/pixman.h
+
+default: include/pixman/pixman-version.h
+
+include/pixman/pixman-version.h: src/lib/pixman/pixman/pixman-version.h.in
+	@$(MSG_GENERATE)$@
+	$(VERBOSE)mkdir -p $(dir $@)
+	$(VERBOSE)sed \
+		-e "s/@PIXMAN_VERSION_MAJOR@/0/"\
+		-e "s/@PIXMAN_VERSION_MINOR@/34/"\
+		-e "s/@PIXMAN_VERSION_MICRO@/0/"\
+		$< > $@
+
+src/lib/pixman/pixman/pixman-version.h.in: $(DOWNLOADS)
