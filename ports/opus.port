@@ -1,0 +1,10 @@
+LICENSE   := BSD
+VERSION   := 1.2.1
+DOWNLOADS := opus.archive
+
+URL(opus) := https://archive.mozilla.org/pub/opus/opus-$(VERSION).tar.gz
+SHA(opus) := 35d108ca9d6a8d05e52d06c5421a5f95b39fdac9
+DIR(opus) := src/lib/opus
+
+DIRS := include/opus
+DIR_CONTENT(include/opus) := src/lib/opus/include/*
