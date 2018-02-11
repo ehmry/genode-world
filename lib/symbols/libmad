@@ -1,0 +1,5 @@
+mad_decoder_init T
+mad_decoder_run T
+mad_stream_buffer T
+mad_stream_skip T
+mad_stream_errorstr T

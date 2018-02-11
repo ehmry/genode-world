@@ -1,0 +1,10 @@
+LICENSE   := GPL2
+VERSION   := 0.15.1
+DOWNLOADS := mad.archive
+
+URL(mad) := ftp://ftp.mars.org/pub/mpeg/libmad-$(VERSION)b.tar.gz
+SHA(mad) := cac19cd00e1a907f3150cc040ccc077783496d76
+DIR(mad) := src/lib/mad
+
+DIRS := include/mad
+DIR_CONTENT(include/mad) := src/lib/mad/mad.h
