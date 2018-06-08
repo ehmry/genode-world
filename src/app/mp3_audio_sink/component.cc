@@ -14,7 +14,6 @@
 /*
  * TODO:
  * - Metadata report
- * - Configure the mpg123 volume control and equalizer
  * - Optimize buffer sizes
  */
 
@@ -68,8 +67,8 @@ struct Mp3_audio_sink::Decoder
 
 	Attached_rom_dataspace _config_rom { _env, "config" };
 
-	Audio_out::Connection _out_left  { _env, "left",  true, true };
-	Audio_out::Connection _out_right { _env, "right", false, false };
+	Audio_out::Connection _out_left  { _env, "left" };
+	Audio_out::Connection _out_right { _env, "right" };
 	Audio_out::Connection *_out[NUM_CHANNELS];
 
 	void die_mpg123(mpg123_handle *mh, char const *msg)
@@ -149,7 +148,7 @@ struct Mp3_audio_sink::Decoder
 		return value;
 	}
 
-	void submit_audio();
+	void _submit_audio();
 
 	/**
 	 * Process client data, blocks until all data is consumed.
@@ -171,14 +170,17 @@ struct Mp3_audio_sink::Decoder
 			while (mpg123_decode_frame(_mh, &num, &audio, &bytes) == MPG123_OK) {
 				Genode::size_t const samples = bytes / Audio_out::SAMPLE_SIZE;
 
-				while (_pcm.write_avail() < samples) {
-					/* submit audio blocks for packet allocation */
-					submit_audio();
-				}
+				while (_pcm.write_avail() < samples)
+					_env.ep().wait_and_dispatch_one_io_signal();
+					/* block for an underrun signal to come in */
 
 				Genode::memcpy(_pcm.write_addr(), audio, bytes);
 				_pcm.fill(samples);
 
+				if (!_out_left.stream().queued()) {
+					_submit_audio();
+					_out_left.start();
+				}
 			}
 
 			if (mpg123_errcode(_mh) != MPG123_ERR_READER
@@ -187,8 +189,8 @@ struct Mp3_audio_sink::Decoder
 		});
 	}
 
-	Io_signal_handler<Decoder> _progress_handler {
-		_env.ep(), *this, &Decoder::submit_audio };
+	Io_signal_handler<Decoder> _underrun_handler {
+		_env.ep(), *this, &Decoder::_submit_audio };
 
 	Signal_handler<Decoder> _config_handler {
 		_env.ep(), *this, &Decoder::_handle_config };
@@ -218,56 +220,40 @@ struct Mp3_audio_sink::Decoder
 
 	Decoder(Genode::Env &env) : _env(env)
 	{
+		_out_left.underrun_sigh(_underrun_handler);
 		_out[LEFT]  = &_out_left;
 		_out[RIGHT] = &_out_right;
-		_out_left.progress_sigh(_progress_handler);
 		_config_rom.sigh(_config_handler);
 		_handle_config();
 	}
 };
 
 
-void Mp3_audio_sink::Decoder::submit_audio()
+void Mp3_audio_sink::Decoder::_submit_audio()
 {
 	using namespace Audio_out;
 
 	enum { STEREO_PERIOD = Audio_out::PERIOD*NUM_CHANNELS };
 
-	if (_out_left.stream()->empty()) {
-		for_each_channel([&] (int const c) {
-			_out[c]->start(); });
-		log("Audio_out streams started");
-	}
-
 	while (_pcm.read_avail() > STEREO_PERIOD) {
-		Audio_out::Packet *p[NUM_CHANNELS];
-
-		while (true) {
-			try { p[LEFT] = _out[LEFT]->stream()->alloc(); break; }
-			catch (Audio_out::Stream::Alloc_failed) {
-				_out[LEFT]->wait_for_alloc(); }
-		}
-
-		unsigned const ppos = _out[LEFT]->stream()->packet_position(p[LEFT]);
-		p[RIGHT] = _out[RIGHT]->stream()->get(ppos);
-
-		float const *content = _pcm.read_addr();
-
-		/* copy channel contents into sessions */
-		for (unsigned i = 0; i < STEREO_PERIOD; i += NUM_CHANNELS) {
-			for_each_channel([&] (int const c) {
-				p[c]->content()[i/NUM_CHANNELS] = content[i+c]; });
-		}
+		bool drain = false;
+		float const *src = _pcm.read_addr();
+		unsigned const pos = _out[LEFT]->stream().record_pos();
 
 		for_each_channel([&] (int const c) {
-			 _out[c]->submit(p[c]); });
-		_pcm.drain(STEREO_PERIOD);
-	}
+			_out[c]->stream().record(pos, [&] (Audio::Packet &pkt) {
+				float *dst = pkt.content();
+				for (unsigned i = 0; i < STEREO_PERIOD; i += NUM_CHANNELS) {
+					dst[i/NUM_CHANNELS] = src[i+c];
+				}
+				drain = true;
+			});
+		});
 
-	if (_out_left.stream()->empty()) {
-		log("Audio_out queue underrun, stopping stream");
-		for_each_channel([&] (int const c) {
-			_out[c]->stop(); });
+		if (drain)
+			_pcm.drain(STEREO_PERIOD);
+		else
+			break;
 	}
 }
 
