@@ -1,0 +1,83 @@
+create_boot_directory
+
+import_from_depot \
+	genodelabs/src/[base_src] \
+	genodelabs/src/init \
+	genodelabs/src/vfs \
+	genodelabs/src/vfs_import \
+
+install_config {
+<config>
+	<parent-provides>
+		<service name="CPU"/>
+		<service name="LOG"/>
+		<service name="PD"/>
+		<service name="RAM"/>
+		<service name="ROM"/>
+		<service name="IO_PORT"/>
+	</parent-provides>
+
+	<default-route> <any-service>
+		<parent/> <any-child/> </any-service> </default-route>
+
+	<start name="timer" caps="96">
+		<resource name="RAM" quantum="1M"/>
+		<provides> <service name="Timer"/> </provides>
+	</start>
+
+	<start name="vfs" caps="128">
+		<resource name="RAM" quantum="4M"/>
+		<provides> <service name="File_system"/> </provides>
+		<config>
+			<vfs>
+				<ram/>
+				<import>
+					<dir name="testrepo.git">
+						<tar name="testrepo.git.tar"/>
+					</dir>
+				</import>
+			</vfs>
+			<default-policy root="/" writeable="yes"/>
+		</config>
+	</start>
+
+	<start name="libgit2-examples-general" caps="256">
+		<resource name="RAM" quantum="8M"/>
+		<config>
+			<arg value="general"/>
+			<arg value="/repo/testrepo.git"/>
+			<vfs>
+				<dir name="repo"> <fs/> </dir>
+				<dir name="dev">
+					<log/>
+					<zero name="random"/>
+				</dir>
+			</vfs>
+			<libc stdout="/dev/log" stderr="/dev/log"/>
+		</config>
+	</start>
+</config>
+}
+
+build {
+	test/libgit2/general
+}
+
+file copy -force test/libgit2/general/testrepo.git.tar [run_dir]/genode
+
+build_boot_image {
+	curl.lib.so
+	libc.lib.so
+	libcrypto.lib.so
+	libgit2-examples-general
+	libgit2.lib.so
+	libm.lib.so
+	libssh.lib.so
+	libssl.lib.so
+	posix.lib.so
+	zlib.lib.so
+}
+
+append qemu_args " -nographic "
+
+run_genode_until {child "libgit2-examples-general" exited with exit value 0} 40

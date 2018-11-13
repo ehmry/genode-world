@@ -1,0 +1,14 @@
+LICENSE   := GPL2
+VERSION   := 0.27.7
+DOWNLOADS := libgit2.archive
+
+OWNER := libgit2
+REPO  := libgit2
+REV   := f23dc5b29f1394928a940d7ec447f4bfd53dad1f
+
+URL(libgit2) := https://github.com/$(OWNER)/$(REPO)/archive/$(REV).tar.gz
+SHA(libgit2) := f2f341c2c91e502cb3982e06cbb9e81c113213d3048f99bd70f4c40cd814d120
+DIR(libgit2) := src/lib/libgit2
+
+DIRS := include/libgit2
+DIR_CONTENT(include/libgit2) := src/lib/libgit2/include/*
