@@ -1,4 +1,4 @@
-include $(REP_DIR)/lib/import/import-c-toxcore.mk
+include $(REP_DIR)/lib/import/import-toxcore.mk
 
 TOXCORE_SRC_DIR = $(TOXCORE_PORT_DIR)/src/lib/c-toxcore
 
