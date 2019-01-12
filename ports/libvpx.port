@@ -1,0 +1,13 @@
+LICENSE   := google
+VERSION   := 1.7.0
+DOWNLOADS := libvpx.archive
+
+OWNER := webmproject
+REPO  := libvpx
+REV   := f80be22a1099b2a431c2796f529bb261064ec6b4
+URL(libvpx) := https://github.com/$(OWNER)/$(REPO)/archive/$(REV).tar.gz
+SHA(libvpx) := 24509625417d0c0232a46e697f7aae01879199b2281936f23e439401b1a1c61c
+DIR(libvpx) := src/lib/libvpx
+
+DIRS := include/libvpx/vpx
+DIR_CONTENT(include/libvpx/vpx) = src/lib/libvpx/vpx/*.h
