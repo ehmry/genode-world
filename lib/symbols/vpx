@@ -1,0 +1,36 @@
+vpx_codec_control_ T
+vpx_codec_dec_init_ver T
+vpx_codec_decode T
+vpx_codec_destroy T
+vpx_codec_enc_config_default T
+vpx_codec_enc_config_set T
+vpx_codec_enc_init_multi_ver T
+vpx_codec_enc_init_ver T
+vpx_codec_encode T
+vpx_codec_error_detail T
+vpx_codec_error T
+vpx_codec_err_to_string T
+vpx_codec_get_caps T
+vpx_codec_get_cx_data T
+vpx_codec_get_frame T
+vpx_codec_get_global_headers T
+vpx_codec_get_preview_frame T
+vpx_codec_get_stream_info T
+vpx_codec_iface_name T
+vpx_codec_peek_stream_info T
+vpx_codec_register_put_frame_cb T
+vpx_codec_register_put_slice_cb T
+vpx_codec_set_cx_data_buf T
+vpx_codec_set_frame_buffer_functions T
+vpx_codec_version_extra_str T
+vpx_codec_version_str T
+vpx_codec_version T
+vpx_codec_vp8_cx_algo D 152
+vpx_codec_vp8_cx T
+vpx_codec_vp8_dx_algo D 152
+vpx_codec_vp8_dx T
+vpx_img_alloc T
+vpx_img_flip T
+vpx_img_free T
+vpx_img_set_rect T
+vpx_img_wrap T
