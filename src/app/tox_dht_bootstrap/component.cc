@@ -31,7 +31,8 @@ extern "C" {
 #include "toxcore/tox.h"
 #include "toxcore/util.h"
 }
-#include "toxcore/genode_logger.h"
+
+#include <toxcore/genode_logger.h>
 
 /* Genode includes */
 #include <os/reporter.h>

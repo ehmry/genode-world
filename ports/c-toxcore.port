@@ -9,5 +9,6 @@ URL(c-toxcore) := https://github.com/$(OWNER)/$(REPO)/archive/$(REV).tar.gz
 SHA(c-toxcore) := ff67bf686f5322c3b5a08d0562d5e6fd20e26cf9f4aebba78b948c8f365dae8e
 DIR(c-toxcore) := src/lib/c-toxcore
 
-DIRS := include/toxcore
-DIR_CONTENT(include/toxcore) = src/lib/c-toxcore/toxcore/*.h
+DIRS := include/c-toxcore/toxcore include/c-toxcore/toxav
+DIR_CONTENT(include/c-toxcore/toxcore) := src/lib/c-toxcore/toxcore/*.h
+DIR_CONTENT(include/c-toxcore/toxav) := src/lib/c-toxcore/toxav/*.h
