@@ -218,6 +218,7 @@ class Audio_player::Playlist
 
 		void _remove_all()
 		{
+			_curr_track = nullptr;
 			while (Track *t = _track_list.first()) {
 				_track_list.remove(t);
 				Genode::destroy(&_alloc, t);
@@ -239,7 +240,6 @@ class Audio_player::Playlist
 
 			/* handle tracks */
 			_remove_all();
-			_curr_track = nullptr;
 
 			unsigned count = 0;
 			auto add_track = [&] (Xml_node const &track) {
@@ -280,6 +280,8 @@ class Audio_player::Playlist
 					};
 
 					track.for_each_sub_node("location", try_location);
+					if (!done)
+						Genode::error("no location available for ", track);
 
 				} catch (...) { Genode::warning("invalid track node in playlist"); }
 			};
@@ -681,6 +683,14 @@ struct Audio_player::Main
 	Genode::Signal_handler<Main> config_dispatcher = {
 		env.ep(), *this, &Main::handle_config };
 
+	void destroy_decoder()
+	{
+		if (decoder) {
+			Genode::destroy(&alloc, decoder);
+			decoder = nullptr;
+		}
+	}
+
 	Main(Genode::Env &env) : env(env)
 	{
 		Genode::Signal_transmitter(config_dispatcher).submit();
@@ -738,6 +748,8 @@ void Audio_player::Main::handle_playlist()
 
 	if (!playlist_rom.is_valid()) { return; }
 
+	destroy_decoder();
+
 	playlist.update(playlist_rom.xml());
 
 	track = playlist.next_track();
@@ -783,8 +795,7 @@ void Audio_player::Main::report_track(Decoder const *d)
 void Audio_player::Main::handle_progress()
 {
 	if (is_stopped) {
-		Genode::destroy(&alloc, decoder);
-		decoder    = nullptr;
+		destroy_decoder();
 		is_stopped = false;
 
 		report_track(nullptr);
