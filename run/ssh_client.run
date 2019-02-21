@@ -33,11 +33,11 @@ build $build_components
 create_boot_directory
 
 import_from_depot \
-	genodelabs/src/[base_src] \
-	genodelabs/pkg/[drivers_interactive_pkg] \
-	genodelabs/src/init \
-	genodelabs/pkg/terminal \
-	genodelabs/src/input_filter \
+	[depot_user]/src/[base_src] \
+	[depot_user]/pkg/[drivers_interactive_pkg] \
+	[depot_user]/src/init \
+	[depot_user]/pkg/terminal \
+	[depot_user]/src/input_filter \
 
 append config {
 <config>
@@ -163,7 +163,6 @@ append_platform_drv_boot_modules
 
 lappend boot_modules [nic_drv_binary]
 
-lappend_if [have_spec ps2]              boot_modules ps2_drv
 lappend_if [have_spec framebuffer]      boot_modules fb_drv
 
 lappend_if [have_spec gpio] boot_modules [gpio_drv]

@@ -18,9 +18,9 @@ build $build_components
 create_boot_directory
 
 import_from_depot \
-	genodelabs/src/[base_src] \
-	genodelabs/src/init \
-	genodelabs/src/ahci_drv \
+	[depot_user]/src/[base_src] \
+	[depot_user]/src/init \
+	[depot_user]/src/ahci_drv \
 
 #
 # Generate config
