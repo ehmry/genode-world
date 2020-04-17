@@ -12,7 +12,7 @@
  */
 
 /* local includes */
-#include "session_requests.h"
+#include <world/session_requests.h>
 
 #include <terminal_session/connection.h>
 #include <base/attached_ram_dataspace.h>
