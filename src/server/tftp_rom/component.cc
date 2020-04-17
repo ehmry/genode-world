@@ -5,13 +5,14 @@
  */
 
 /*
- * Copyright (C) 2016 Genode Labs GmbH
+ * Copyright (C) 2016-2020 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
  * under the terms of the GNU General Public License version 2.
  */
 
 /* Genode includes */
+#include <world/session_requests.h>
 #include <nic/packet_allocator.h>
 #include <timer_session/connection.h>
 #include <rom_session/rom_session.h>
@@ -26,298 +27,383 @@
 #include <util/endian.h>
 
 /* LwIP includes */
-#include <lwip/api.h>
-#include <lwip/inet.h>
-#include <lwip/udp.h>
-#include <lwip/init.h>
-#include <lwip/genode_init.h>
 #include <lwip/nic_netif.h>
 
 
 namespace Tftp_rom {
 
+	enum
+		{ RRQ   = 1
+		, WRQ   = 2
+		, DATA  = 3
+		, ACK   = 4
+		, ERROR = 5
+		, OACK  = 6
+		};
+
 	using namespace Genode;
 
-	class Timeout_dispatcher;
-	class Session_component;
-	class Root;
+	struct Transfer;
+	struct Session_component;
+	typedef Genode::Id_space<Session_component> Session_space;
+
 	struct Main;
 
 	typedef List<Session_component> Session_list;
-
 }
 
 
-extern "C" void rrq_cb(void *arg, struct udp_pcb *pcb, struct pbuf *p,
-                       const ip_addr_t *addr, u16_t port);
-
-extern "C" void data_cb(void *arg, struct udp_pcb *pcb, struct pbuf *p,
-                        const ip_addr_t *addr, u16_t port);
+using namespace Lwip;
 
 
-class Tftp_rom::Session_component :
-	public Genode::Rpc_object<Genode::Rom_session>,
-	public Session_list::Element,
-	Genode::Lock
+extern "C" void initial_cb(void*, struct udp_pcb*, struct pbuf*,
+                           const ip_addr_t*, u16_t);
+
+extern "C" void data_cb(void*, struct udp_pcb*, struct pbuf*,
+                        const ip_addr_t*, u16_t);
+
+
+struct Tftp_rom::Transfer
 {
-	private:
+	Transfer(Transfer const &);
+	Transfer &operator = (Transfer const &);
 
-		Genode::Env &_env;
+	udp_pcb *_pcb; /* lwIP UDP context  */
+	pbuf    *_chain_head { nullptr };
 
-		typedef Genode::String<128> Filename;
-		Filename const _filename;
+	Constructible<Attached_dataspace> _attached_dataspace { };
 
-		Ram_dataspace_capability  _dataspace;
-		Signal_context_capability _sigh;
+	typedef Genode::String<128> Filename;
+	Filename const _filename;
 
-		udp_pcb *_pcb; /* lwIP UDP context  */
-		pbuf    *_chain_head = NULL;
-		pbuf    *_chain_tail = NULL;
-		/*
-		 * References to both ends of the buffer chain
-		 * are retained to make concatenation faster.
-		 */
+	Timer::One_shot_timeout<Session_component> _timeout;
 
-		unsigned long const _start; /* start of session */
+	Duration           _timeout_end;
+	Microseconds const _timeout_period;
 
-		unsigned       _ack_timeout = 1 << 11;
-		unsigned const _client_timeout;
+	Genode::off_t  _rom_offset { 0 };
 
-		uint16_t       _block_num;  /* TFTP block number */
+	ip_addr_t const _addr;
+	uint16_t  const _port;
+	uint16_t        _block_num { 0 };  // TFTP block number
 
-		ip_addr_t       _addr;
-		uint16_t  const _port;
+	enum State { FAILED, INIT, PENDING, COMPLETED };
 
-		inline void finalize()
-		{
-			unlock();
-			_ack_timeout = 0;
-			if (_chain_head != NULL) {
-				pbuf_free(_chain_head);
-				_chain_head = NULL;
-			}
-		}
+	State _state { INIT };
 
-		inline void timeout()
-		{
-			Genode::error(_filename.string(), " timed out");
-			finalize();
-		}
+	State state() const { return _state; }
 
-	public:
+	Transfer( Session_component &session
+	        , char const        *namestr
+	        , ip_addr           &ipaddr
+	        , uint16_t           port
+	        , Timer::Connection &timer
+	        , Microseconds       timeout
+	        );
 
-		void initial_request()
-		{
-			udp_bind(_pcb, IP_ADDR_ANY, 0);
+	~Transfer()
+	{
+		if (_pcb != nullptr)
+			udp_remove(_pcb);
 
-			Genode::size_t filename_len = Genode::strlen(_filename.string());
+		if (_chain_head != nullptr)
+			pbuf_free(_chain_head);
+	}
 
-			pbuf *req = pbuf_alloc(PBUF_TRANSPORT, filename_len+9, PBUF_RAM);
+	void schedule_timeout()
+	{
+		Microseconds next { _timeout_period.value / 4 };
+		_timeout.schedule(next);
+	}
 
-			uint8_t *buf = (uint8_t*)req->payload;
-	
-			buf[0] = 0x00;
-			buf[1] = 0x01;
-
-			Genode::strncpy((char*)buf+2, _filename.string(), filename_len+1);
-			Genode::strncpy((char*)buf+3+filename_len, "octet", 6);
-
-			udp_sendto(_pcb, req, &_addr, _port);
-		}
-
-		Session_component(Genode::Env  &env,
-		                  char const   *namestr,
-		                  ip_addr      &ipaddr,
-		                  uint16_t      port,
-		                  unsigned long now,
-		                  unsigned      timeout)
-		:
-			Lock(LOCKED),
-			_env(env),
-			_filename(namestr),
-			_pcb(udp_new()),
-			_start(now),
-			_client_timeout(timeout),
-			_addr(ipaddr), _port(port)
-		{
-			if (_pcb == NULL) {
-				Genode::error("failed to create UDP context");
-				throw Genode::Service_denied();
-			}
-
-			/* set callback */
-			udp_recv(_pcb, rrq_cb, this);
-
-			initial_request();
-		}
-
-		~Session_component()
-		{
-			using namespace Genode;
-
-			if (_pcb != NULL)
-				udp_remove(_pcb);
-
-			if (_chain_head != NULL)
-				pbuf_free(_chain_head);
-
-			if (_dataspace.valid())
-				_env.ram().free(_dataspace);
-		}
-
-		/**************************************
-		 ** Members available to lwIP thread **
-		 **************************************/
-
-		ip_addr_t *addr() { return &_addr; }
-
-		void send_ack()
-		{
-			pbuf    *ack = pbuf_alloc(PBUF_TRANSPORT, 4, PBUF_RAM);
-			uint8_t *buf = (uint8_t*)ack->payload;
-
-			buf[0] = 0x00;
-			buf[1] = 0x04;
-
-			buf[2] = _block_num >> 8;
-			buf[3] = _block_num;
-
-			udp_send(_pcb, ack);
-		}
-
-		void first_response(pbuf *data, ip_addr_t const *addr, uint16_t port)
-		{
-			/*
-			 * we now know the port the server will use,
-			 * lwIP will now drop all other packets
-			 */
-			udp_connect(_pcb, addr, port);
-
-			/* swap out the callback */
-			udp_recv(_pcb, data_cb, this);
-		}
-
-		/**
-		 * Returns false if data was not in
-		 * response to the last request
-		 */
-		bool add_block(pbuf *data)
-		{
-			using Genode::size_t;
-
-			uint8_t *buf = (uint8_t*)data->payload;
-
-			/* TFTP packets always start with zero */
-			if (buf[0])
+	bool retry(Duration current)
+	{
+		if (_timeout_end.less_than(current)) {
+			error(_filename, " timed out");
+			_state = FAILED;
+			return false;
+		} else {
+			switch (_state) {
+			case INIT:
+				initial_request();
+				break;
+			case PENDING:
+				send_ack(_block_num);
+				break;
+			default:
 				return false;
-
-			if (buf[1] == 0x05) {
-				buf[data->len-1] = '\0';
-				Genode::error(_filename.string(), ": ", (const char *)buf+4);
-				_ack_timeout = 0;
-				/* permanent error, inform the client */
-				finalize();
-				pbuf_free(data);
-				return true;
 			}
-
-			if ((buf[1] != 0x03)
-			 || (host_to_big_endian(*((uint16_t*)buf+1)) != (_block_num+1)))
-				return false;
-
-			++_block_num;
-			send_ack();
-
-			bool done = data->len < 516;
-
-			/* hit the hard 32MB limit */
-			if (!done && _block_num == 0xffff) {
-				Genode::error(_filename.string(), ": maximum file size exceded!");
-				finalize();
-			}
-
-			if (_chain_head == NULL)
-				_chain_head = _chain_tail = data;
-			else {
-				/* data pointer is invalid after pbuf_cat */
-				pbuf_cat(_chain_tail, data);
-				_chain_tail = _chain_tail->next;
-			}
-
-			if (done) /* construct the dataspace */ {
-
-				size_t rom_len = 0;
-
-				/*
-				 * pbuf.tot_len is only a 16 bit number so
-				 * a recount is probably required
-				 */
-				for (pbuf *link = _chain_head; link != NULL; link = link->next)
-					rom_len += link->len-4;
-
-				_dataspace = _env.ram().alloc(rom_len);
-				uint8_t *rom_addr = _env.rm().attach(_dataspace);
-				uint8_t *p = rom_addr;
-
-				for (pbuf *link = _chain_head; link != NULL; link = link->next) {
-					size_t len = link->len - 4;
-					Genode::memcpy(p, ((uint8_t*)link->payload)+4, len);
-					p += len;
-				}
-
-				_env.rm().detach(rom_addr);
-				Genode::log(_filename.string(), " retrieved");
-				finalize();
-			}
-
+			schedule_timeout();
 			return true;
 		}
+	}
 
-		/*************************************
-		 ** Tiggered by timer on RPC thread **
-		 *************************************/
+	void initial_request()
+	{
+		Genode::size_t filename_len = Genode::strlen(_filename.string());
 
-		bool done() const { return _ack_timeout == 0; }
+		pbuf *req = pbuf_alloc(PBUF_TRANSPORT, 2+filename_len+1+6+6+3, PBUF_RAM);
 
-		void check_time(unsigned long now)
-		{
-			/* XXX: timer rollover? */
-			if (!_block_num) {
-				if (_client_timeout & (_client_timeout < now - _start))
-					timeout();
-				else
-	 				initial_request();
-				return;
-			}
+		uint8_t *buf = (uint8_t*)req->payload;
 
-			unsigned period = (now - _start) / _block_num;
+		buf[0] = 0x00;
+		buf[1] = RRQ;
 
-			if (_client_timeout && (_client_timeout < period)) {
-				timeout();
-				return;
-			}
+		off_t offset = 2;
 
-			if (_ack_timeout < period)
-				send_ack();
+		Genode::strncpy((char*)buf+offset, _filename.string(), filename_len+1);
+		offset += filename_len+1;
 
-			_ack_timeout = period+(period/2);
+		Genode::strncpy((char*)buf+offset, "octet", 6);
+		offset += 5+1;
+
+		Genode::strncpy((char*)buf+offset, "tsize", 6);
+
+		udp_sendto(_pcb, req, &_addr, _port);
+		schedule_timeout();
+	}
+
+	void send_ack(uint16_t number)
+	{
+		pbuf    *ack = pbuf_alloc(PBUF_TRANSPORT, 4, PBUF_RAM);
+		uint8_t *buf = (uint8_t*)ack->payload;
+
+		buf[0] = 0x00;
+		buf[1] = ACK;
+
+		buf[2] = number >> 8;
+		buf[3] = number;
+
+		udp_send(_pcb, ack);
+		schedule_timeout();
+	}
+
+	void data_cb(pbuf *data)
+	{
+		using Genode::size_t;
+
+		uint8_t *buf = (uint8_t*)data->payload;
+
+		/* TFTP packets always start with zero */
+		if (buf[0]) {
+			send_ack(_block_num);
+			return;
 		}
 
-		/***************************
-		 ** ROM session interface **
-		 ***************************/
+		if (buf[1] == ERROR) {
+			buf[data->len-1] = '\0';
+			Genode::error(_filename.string(), ": ", (const char *)buf+4);
+			// permanent error, inform the client
+			_state = FAILED;
+			return;
+		}
 
-		Rom_dataspace_capability dataspace() override
+		if ((buf[1] != DATA)
+		 || (host_to_big_endian(*((uint16_t*)buf+1)) != (_block_num+1)))
 		{
-			if (!done()) lock();
+			send_ack(_block_num);
+			return;
+		}
 
-			Dataspace_capability ds = _dataspace;
-			return static_cap_cast<Genode::Rom_dataspace>(ds);
-		};
+		send_ack(++_block_num);
+		_timeout_end.add(_timeout_period);
 
-		void sigh(Signal_context_capability sigh) override { _sigh = sigh; }
+		pbuf_remove_header(data, 4);
+
+		if (data->len < 512) {
+			_state = COMPLETED;
+		}
+
+		/* hit the 32MB limit */
+		if (_state == PENDING && _block_num == 0) {
+			_block_num = 1;
+		}
+
+		if (_attached_dataspace->size()-_rom_offset < data->tot_len) {
+			_state = FAILED;
+		} else {
+			uint8_t *rom_ptr = _attached_dataspace->local_addr<uint8_t>();
+			u16_t n = pbuf_copy_partial(data, rom_ptr+_rom_offset, data->tot_len, 0);
+			_rom_offset += n;
+		}
+	}
+
+	void initial_cb( Genode::Env &env
+	               , Ram_dataspace_capability &ds_cap
+	               , void *arg, pbuf *data
+	               , const ip_addr_t *addr, u16_t port )
+	{
+		if (!ip_addr_cmp(addr, &_addr)) {
+			return;
+		}
+
+		_state = FAILED;
+
+		char *buf = (char*)data->payload;
+		size_t   len = data->len;
+		if (len < 2+5+1+1+1) return;
+
+		if (buf[1] == OACK && Genode::strcmp("tsize", buf+2, 5) == 0) {
+			buf[len-1] = 0;
+			size_t rom_len = 0;
+			ascii_to(buf+2+5+1, rom_len);
+
+			try {
+				ds_cap = env.ram().alloc(rom_len);
+				_attached_dataspace.construct(env.rm(), ds_cap);
+				_state = PENDING;
+
+				// swap out the callback
+				udp_recv(_pcb, ::data_cb, arg);
+
+				// ignore packets not from this address and port
+				udp_connect(_pcb, addr, port);
+
+				send_ack(0);
+			} catch (...) {
+				error("cannot allocate a ROM dataspace for ", _filename);
+			}
+		}
+	}
 
 };
+
+
+struct Tftp_rom::Session_component :
+	Genode::Rpc_object<Genode::Rom_session>
+{
+	Genode::Env              &_env;
+	Genode::Allocator        &_alloc;
+	Transfer                 *_transfer;
+
+	Session_space::Element    _session_elem;
+	Ram_dataspace_capability  _dataspace { };
+
+	Session_component(Session_component const &);
+	Session_component &operator = (Session_component const &);
+
+	template <typename PROC>
+	void with_transfer(PROC const &proc) {
+		if (_transfer != nullptr) proc(*_transfer); }
+
+	Session_component( Genode::Env       &env
+	                 , Genode::Allocator &alloc
+	                 , Session_space     &space
+	                 , Session_space::Id  id
+	                 , char const        *namestr
+	                 , ip_addr           &ipaddr
+	                 , uint16_t           port
+	                 , Timer::Connection &timer
+	                 , Microseconds       timeout
+	                 )
+	: _env(env)
+	, _alloc(alloc)
+	, _transfer(new (alloc)
+		Transfer(*this, namestr, ipaddr, port,
+		timer, timeout))
+	, _session_elem(*this, space, id)
+	{ }
+
+	~Session_component()
+	{
+		if (_dataspace.valid())
+			_env.ram().free(_dataspace);
+
+		if (_transfer != nullptr)
+			destroy(_alloc, _transfer);
+	}
+
+	void destruct()
+	{
+		Parent::Server::Id const id { _session_elem.id().value };
+		_env.parent().session_response(id, Parent::SERVICE_DENIED);
+
+		destroy(_alloc, this);
+	}
+
+	void handle_timeout(Duration dur)
+	{
+		with_transfer([&] (Transfer &transfer) {
+			if (!transfer.retry(dur)) {
+				destruct();
+			}
+		});
+	}
+
+	void data_cb(struct pbuf *data)
+	{
+		with_transfer([&] (Transfer &transfer) {
+			transfer.data_cb(data);
+
+			switch (transfer.state()) {
+
+			case Transfer::INIT:
+			case Transfer::PENDING:
+				break;
+
+			case Transfer::COMPLETED: {
+				destroy(_alloc, &transfer);
+				_transfer = nullptr;
+
+				Parent::Server::Id const id { _session_elem.id().value };
+				_env.parent().deliver_session_cap(id, _env.ep().manage(*this));
+			} break;
+
+			case Transfer::FAILED:
+				destruct();
+				break;
+
+			}
+		});
+	}
+
+	void initial_cb(void *arg, struct pbuf *data, const ip_addr_t *addr, u16_t port)
+	{
+		with_transfer([&] (Transfer &transfer) {
+			transfer.initial_cb(_env, _dataspace, arg, data, addr, port); });
+	}
+
+	/***************************
+	 ** ROM session interface **
+	 ***************************/
+
+	Rom_dataspace_capability dataspace() override {
+		return static_cap_cast<Rom_dataspace>(
+			(Dataspace_capability)_dataspace); };
+
+	void sigh(Signal_context_capability) override { }
+
+};
+
+
+Tftp_rom::Transfer::Transfer( Session_component &session
+                            , char const        *namestr
+                            , ip_addr           &ipaddr
+                            , uint16_t           port
+                            , Timer::Connection &timer
+                            , Microseconds       timeout
+                            )
+: _pcb(udp_new())
+, _filename(namestr)
+, _timeout(timer, session, &Session_component::handle_timeout)
+, _timeout_end(timer.curr_time())
+, _timeout_period(timeout)
+, _addr(ipaddr)
+, _port(port)
+{
+	if (_pcb == nullptr) {
+		Genode::error("failed to create UDP context");
+		throw Genode::Service_denied();
+	}
+
+	udp_bind(_pcb, IP_ADDR_ANY, 0);
+
+	/* set callback */
+	udp_recv(_pcb, ::initial_cb, &session);
+
+	initial_request();
+	_timeout_end.add(_timeout_period);
+}
 
 
 /********************
@@ -325,228 +411,137 @@ class Tftp_rom::Session_component :
  ********************/
 
 
-extern "C" void rrq_cb(void *arg, struct udp_pcb *pcb, struct pbuf *data,
-                       const ip_addr_t *addr, u16_t port)
+extern "C" void initial_cb(void *arg, struct udp_pcb*, struct pbuf *data,
+                           const ip_addr_t *addr, u16_t port)
 {
-	Tftp_rom::Session_component *session = (Tftp_rom::Session_component*)arg;
-
-	if (!ip_addr_cmp(addr, session->addr())) {
-		Genode::error("dropping rogue packet");
-		pbuf_free(data);
-		return;
-	}
-
-	if (session->add_block(data)) {
-		session->first_response(data, addr, port);
-		return;
-	}
-
+	auto session = static_cast<Tftp_rom::Session_component*>(arg);
+	session->initial_cb(arg, data, addr, port);
 	pbuf_free(data);
-	session->initial_request();
 }
 
 
-extern "C" void data_cb(void *arg, udp_pcb *upcb, pbuf *data,
-                        ip_addr_t const *addr, Genode::uint16_t port)
+extern "C" void data_cb(void *arg, udp_pcb*, pbuf *data,
+                        ip_addr_t const *, Genode::uint16_t)
 {
-	Tftp_rom::Session_component *session = (Tftp_rom::Session_component*)arg;
-	if (session->add_block(data)) return;
-
-	/* bad packet */
+	auto session = static_cast<Tftp_rom::Session_component*>(arg);
+	session->data_cb(data);
 	pbuf_free(data);
-	session->send_ack();
 }
 
 
-class Tftp_rom::Root : public Genode::Root_component<Session_component>
+struct Tftp_rom::Main final :
+	Genode::Session_request_handler
 {
-	private:
+	Genode::Env       &_env;
+	Allocator         &_alloc;
+	Timer::Connection &_timer;
 
-		Genode::Env                    &_env;
-		Genode::Attached_rom_dataspace  _config_rom { _env, "config" };
+	Attached_rom_dataspace  _config_rom { _env, "config" };
 
-		/**
-		 * LwIP connection to Nic service
-		 */
-		Lwip::Nic_netif _netif { _env, *md_alloc(), _config_rom.xml() };
+	struct Dispatcher : Lwip::Nic_netif
+	{
+		Session_requests_rom _session_requests;
 
-		class Timeout_dispatcher : Genode::Thread, Genode::Lock
+		Dispatcher( Genode::Env &env
+		          , Genode::Allocator &alloc
+		          , Genode::Xml_node config
+		          , Session_request_handler &handler
+		          )
+		: Lwip::Nic_netif(env, alloc, config)
+		, _session_requests(env, handler)
+		{ }
+
+		void status_callback() override
 		{
-			private:
+			if (Lwip::Nic_netif::ready())
+				_session_requests.schedule();
+			// process requests when the Nic interface is ready
+		}
 
-				enum { TIMER_PERIOD_US = 1 << 20 };
+	} _dispatcher { _env, _alloc, _config_rom.xml(), *this };
 
-				Timer::Connection          _timer;
-				Signal_receiver            _sig_rec;
-				Signal_context             _sig_ctx;
-				Signal_context_capability  _sig_cap;
-				Session_list               _sessions;
+	Session_space  _sessions { };
 
-			protected:
+	Main( Genode::Env &env
+	    , Allocator &alloc
+	    , Timer::Connection &timer
+	    )
+	: _env(env)
+	, _alloc(alloc)
+	, _timer(timer)
+	{ }
 
-				void entry() override
-				{
-					for (Genode::Signal_context *ctx = _sig_rec.wait_for_signal().context();
-					     ctx == &_sig_ctx;
-					     ctx = _sig_rec.wait_for_signal().context())
-					{
-						Lock::Guard(*this);
+	void handle_session_create(Session_state::Name const &name,
+	                           Parent::Server::Id pid,
+	                           Session_state::Args const &args) override
+	{
+		if (name != "ROM") throw Service_denied();
 
-						Session_component *session = _sessions.first();
-						if (!session) {
-							_timer.sigh(Signal_context_capability());
-							continue;
-						}
+		Session_space::Id  const id { pid.value };
+		bool session_created { false };
 
-						unsigned long now = _timer.elapsed_ms();
+		try {
+			_sessions.apply<Session_component&>(id,
+				[&] (Session_component &) { session_created = true; });
+		} catch (Id_space<Session_component>::Unknown_id) { }
 
-						do {
-							if (session->done()) {
-								Session_component *old = session;
-								session = old->next();
-								_sessions.remove(old);
-							} else {
-								session->check_time(now);
-								session = session->next();
-							}
-						} while (session);
-					}
-				}
-
-			public:
-
-				Timeout_dispatcher(Genode::Env &env)
-				:
-					Genode::Thread(env, "timeout_ep", 1024 * sizeof(Genode::addr_t)),
-					_timer(env), _sig_cap(_sig_rec.manage(&_sig_ctx))
-				{
-					_timer.trigger_periodic(TIMER_PERIOD_US);
-					start();
-				}
-
-				/* A destructor for style */
-				~Timeout_dispatcher()
-				{
-					/* break entry loop */
-					Genode::Signal_context tmp_ctx;
-					Genode::Signal_transmitter(_sig_rec.manage(&tmp_ctx)).submit();
-					join();
-					_sig_rec.dissolve(&tmp_ctx);
-					_sig_rec.dissolve(&_sig_ctx);
-				}
-
-				unsigned long elapsed_ms() { return _timer.elapsed_ms(); }
-
-				void insert(Session_component *session)
-				{
-					Lock::Guard(*this);
-
-					if (!_sessions.first())
-						_timer.sigh(_sig_cap);
-
-					_sessions.insert(session);
-				}
-
-				void remove(Session_component *session)
-				{
-					Lock::Guard(*this);
-
-					_sessions.remove(session);
-					/* timer will be stopped at the next signal */
-				}
-
-		} _timeout_dispatcher { _env } ;
-
-	protected:
-
-		Session_component *_create_session(const char *args) override
-		{
-			while (!_netif.ready())
-				_env.ep().wait_and_dispatch_one_io_signal();
-
-			Session_component *session;
+		if (!session_created) {
+			Session_label const label = label_from_args(args.string());
+			Session_label const rom_name = label.last_element();
 
 			_config_rom.update();
+			Session_policy policy { label, _config_rom.xml() };
 
 			ip_addr  ipaddr;
 			unsigned port = 69;
-			unsigned timeout = 0;
-
-			Session_label const label = label_from_args(args);
-			Session_label const rom_name = label.last_element();
+			unsigned timeout = 10;
 
 			try {
-
-				Session_policy policy(label, _config_rom.xml());
-
-				try {
-					char addr_str[53];
-					policy.attribute("ip").value(addr_str, sizeof(addr_str));
-					ipaddr_aton(addr_str, &ipaddr);
-				} catch (...) {
-					Genode::error(label.string(), ": 'ip' not specified in policy");
-					throw Service_denied();
-				}
-
-				try { policy.attribute("port").value(&port); }
-				catch (...) { }
-
-				try { policy.attribute("timeout").value(&timeout); }
-				catch (...) { }
-
-				try {
-					Path<1024> path;
-
-					policy.attribute("dir").value(path.base(), path.capacity());
-					path.append("/");
-					path.append(rom_name.string());
-
-					session = new (md_alloc())
-						Session_component(_env, path.base(), ipaddr, port,
-						                  _timeout_dispatcher.elapsed_ms(), timeout*1000);
-					Genode::log((char const *)path.base(), " requested");
-				} catch (...) { /* no dir attribute */
-					session = new (md_alloc())
-						Session_component(_env, rom_name.string(), ipaddr, port,
-						                  _timeout_dispatcher.elapsed_ms(), timeout*1000);
-					Genode::log(label.string(), " requested");
-				}
-			}
-			catch (Session_policy::No_policy_defined) {
-				Genode::error("no policy for defined for ", label.string());
+				char addr_str[53];
+				policy.attribute("ip").value(addr_str, sizeof(addr_str));
+				ipaddr_aton(addr_str, &ipaddr);
+			} catch (Xml_attribute::Nonexistent_attribute) {
+				Genode::error(label.string(), ": 'ip' not specified in policy");
 				throw Service_denied();
 			}
 
-			_timeout_dispatcher.insert(session);
-			return session;
-		}
+			policy.attribute_value("port", &port);
+			policy.attribute_value("timeout", &timeout);
+			Microseconds timeout_us { timeout*1000*1000 };
 
-		void _destroy_session(Session_component *session) override
+			enum { PATH_LEN = 1024 };
+
+			String<PATH_LEN> dir { };
+			policy.attribute_value("dir", &dir);
+			Path<PATH_LEN> path { rom_name.string(), dir.string() };
+
+			new (_alloc)
+				Session_component(_env, _alloc, _sessions, id,
+				                  path.base(), ipaddr, port,
+					              _timer, timeout_us);
+		}
+	}
+
+	void handle_session_close(Parent::Server::Id pid) override
+	{
+		Session_space::Id id { pid.value };
+		_sessions.apply<Session_component&>(
+			id, [&] (Session_component &session)
 		{
-			_timeout_dispatcher.remove(session);
-			Genode::destroy(md_alloc(), session);
-		}
+			_env.ep().dissolve(session);
+			destroy(_alloc, &session);
+			_env.parent().session_response(pid, Parent::SESSION_CLOSED);
+		});
+	}
 
-	public:
-
-		Root(Genode::Env &env, Genode::Allocator &md_alloc)
-		:
-			Genode::Root_component<Session_component>(&env.ep().rpc_ep(), &md_alloc),
-			_env(env)
-		{
-			env.parent().announce(env.ep().manage(*this));
-		}
 };
 
 
 void Component::construct(Genode::Env &env)
 {
-	env.exec_static_constructors();
-
-	static Genode::Heap heap(env.ram(), env.rm());
-	static Timer::Connection timer(env, "lwip");
+	static Genode::Heap      heap  { env.pd(), env.rm() };
+	static Timer::Connection timer { env };
 
 	Lwip::genode_init(heap, timer);
-
-	static Tftp_rom::Root root(env, heap);
+	static Tftp_rom::Main main(env, heap, timer);
 }
