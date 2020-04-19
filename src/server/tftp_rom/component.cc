@@ -242,9 +242,15 @@ struct Tftp_rom::Transfer
 		char *buf = (char*)data->payload;
 		size_t   len = data->len;
 		if (len < 2+5+1+1+1) return;
+		buf[len-1] = 0;
+
+		if (buf[1] == ERROR) {
+			Genode::error(_filename.string(), ": ", (const char *)buf+4);
+			// permanent error, inform the client
+			return;
+		}
 
 		if (buf[1] == OACK && Genode::strcmp("tsize", buf+2, 5) == 0) {
-			buf[len-1] = 0;
 			size_t rom_len = 0;
 			ascii_to(buf+2+5+1, rom_len);
 
@@ -360,7 +366,17 @@ struct Tftp_rom::Session_component :
 	void initial_cb(void *arg, struct pbuf *data, const ip_addr_t *addr, u16_t port)
 	{
 		with_transfer([&] (Transfer &transfer) {
-			transfer.initial_cb(_env, _dataspace, arg, data, addr, port); });
+			transfer.initial_cb(_env, _dataspace, arg, data, addr, port);
+			switch (transfer.state()) {
+			case Transfer::INIT:
+			case Transfer::PENDING:
+				break;
+			case Transfer::COMPLETED:
+			case Transfer::FAILED:
+				destruct();
+				break;
+			}
+		});
 	}
 
 	/***************************
