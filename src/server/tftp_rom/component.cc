@@ -158,6 +158,8 @@ struct Tftp_rom::Transfer
 		offset += 5+1;
 
 		Genode::strncpy((char*)buf+offset, "tsize", 6);
+		offset += 5+1;
+		memset(buf+offset, 0, req->len - offset);
 
 		udp_sendto(_pcb, req, &_addr, _port);
 		schedule_timeout();
